@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+numpy
+opencv-python
+openvino
+requests
+python-multipart
