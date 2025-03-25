@@ -8,7 +8,7 @@ This is a FastAPI-based AI API that leverages **OpenVINO** for optimized deep le
 It provides a RESTful interface for running AI models, such as object detection and image classification.
 
 ## **📂 Project Structure**
-```
+```plaintext
 atriva-ai-openvino/
 │── app/
 │   ├── routes.py         # API route definitions
