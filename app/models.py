@@ -96,7 +96,8 @@ class ModelManager:
             compiled_model = self.ie.compile_model(model=model, device_name="CPU")  # Change to "GPU" or "MYRIAD" if needed
             print(f"Model compiled successfully on device: CPU")
 
-            return compiled_model
+            input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
+            return compiled_model, input_shape
         else:
             raise Exception(f"❌ Failed to download {model_name}.")
 

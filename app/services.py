@@ -4,9 +4,10 @@ import cv2
 from openvino.runtime import InferRequest
 from app.models import model_manager
 
-def preprocess_image(image_bytes: bytes):
+def preprocess_image(image_bytes: bytes, input_shape: tuple):
     """Preprocess image to match OpenVINO model input shape."""
-    target_shape = (544, 320)  # Model expects (width, height)
+    _, _, h, w = input_shape  # Extract height and width from model shape
+    target_shape = (w, h)  # Model expects (width, height)
 
     # Convert bytes to NumPy array
     image_array = np.frombuffer(image_bytes, np.uint8)
@@ -16,6 +17,7 @@ def preprocess_image(image_bytes: bytes):
 
     # Resize image to match model input dimensions
     image_resized = cv2.resize(image, target_shape)
+    print(f'Resize input image to {w} x {h} matching model size')
 
     # Convert image format from (H, W, C) -> (C, H, W)
     image_transposed = image_resized.transpose((2, 0, 1))  # Channels first
@@ -83,10 +85,10 @@ def run_inference(input_data, compiled_model):
 def run_object_detection(image_bytes: bytes, object_name: str):
 
     """Runs inference using a dynamically selected model."""
-    compiled_model = model_manager.load_model(object_name)  # Load requested model by object name like "face"
+    compiled_model, input_shape = model_manager.load_model(object_name)  # Load requested model by object name like "face"
     
     # Preprocess image for model input
-    image = preprocess_image(image_bytes)
+    image = preprocess_image(image_bytes, input_shape)
 
     # Run inference
     model_output = run_inference(image, compiled_model)  # Ensure run_inference() is correctly handling input
