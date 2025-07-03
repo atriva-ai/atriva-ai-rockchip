@@ -80,7 +80,8 @@ class ModelManager:
 
             # Compile the model for inference
             compiled_model = self.ie.compile_model(model=model, device_name="CPU")  # Change to "GPU" or "MYRIAD" if needed
-            return compiled_model
+            input_shape = compiled_model.input(0).shape  # Expected shape (N, C, H, W)
+            return compiled_model, input_shape
 
         print(f"⚠️ Model {model_name} not found locally. Downloading...")
         self.download_model(model_name)

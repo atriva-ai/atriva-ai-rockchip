@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.services import run_object_detection
-from app.models import model_manager
+from app.models import model_manager, ACCELERATORS, MODEL_NAME_MAPPING
 from app.shared_data import (
     list_available_cameras, 
     get_frame_info, 
@@ -10,8 +10,12 @@ from app.shared_data import (
 )
 from fastapi.responses import FileResponse
 import os
+from threading import Thread
+from typing import Optional
 
 router = APIRouter()
+
+ARCHITECTURE = "openvino"
 
 @router.get("/models")
 async def list_available_models():
@@ -81,3 +85,119 @@ async def get_camera_frame_by_index(camera_id: str, frame_index: int):
         )
     
     return FileResponse(frame_files[frame_index])
+
+# --- Model Info API ---
+@router.get("/model/info")
+async def get_model_info():
+    return {
+        "models": list(MODEL_NAME_MAPPING.keys()),
+        "accelerators": ACCELERATORS,
+        "architecture": ARCHITECTURE
+    }
+
+# --- Model Load API ---
+@router.post("/model/load")
+async def load_model(model_name: str, accelerator: Optional[str] = "cpu32"):
+    if accelerator not in ACCELERATORS:
+        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    try:
+        # Create a new manager for the requested accelerator
+        from app.models import ModelManager
+        manager = ModelManager(acceleration=accelerator)
+        compiled_model, input_shape = manager.load_model(model_name)
+        return {
+            "model_name": model_name,
+            "accelerator": accelerator,
+            "architecture": ARCHITECTURE,
+            "status": "loaded"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Inference on Latest Frame API ---
+@router.post("/inference/latest-frame")
+async def inference_latest_frame(camera_id: str, model_name: str, accelerator: Optional[str] = "cpu32"):
+    if accelerator not in ACCELERATORS:
+        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    latest_frame = get_latest_frame(camera_id)
+    if not latest_frame:
+        raise HTTPException(status_code=404, detail=f"No frames found for camera {camera_id}")
+    frame_bytes = read_frame_file(latest_frame)
+    if not frame_bytes:
+        raise HTTPException(status_code=500, detail=f"Failed to read frame file: {latest_frame}")
+    from app.models import ModelManager
+    manager = ModelManager(acceleration=accelerator)
+    from app.services import preprocess_image, run_inference
+    compiled_model, input_shape = manager.load_model(model_name)
+    image = preprocess_image(frame_bytes, input_shape)
+    model_output = run_inference(image, compiled_model)
+    # Parse output (same as run_object_detection)
+    confidence_threshold = 0.3
+    detections = []
+    for detection in model_output:
+        image_id, class_id, confidence, xmin, ymin, xmax, ymax = detection
+        if confidence > confidence_threshold:
+            detections.append({
+                "class_id": int(class_id),
+                "confidence": float(confidence),
+                "bbox": [float(xmin), float(ymin), float(xmax), float(ymax)]
+            })
+    return {
+        "camera_id": camera_id,
+        "model_name": model_name,
+        "accelerator": accelerator,
+        "architecture": ARCHITECTURE,
+        "frame_path": latest_frame,
+        "detections": detections
+    }
+
+# --- Background Inference API ---
+def background_inference(camera_id: str, model_name: str, accelerator: str):
+    from app.models import ModelManager
+    from app.services import preprocess_image, run_inference
+    manager = ModelManager(acceleration=accelerator)
+    compiled_model, input_shape = manager.load_model(model_name)
+    frame_files = list_camera_frames(camera_id)
+    results = []
+    for frame_path in frame_files:
+        frame_bytes = read_frame_file(frame_path)
+        if not frame_bytes:
+            continue
+        image = preprocess_image(frame_bytes, input_shape)
+        model_output = run_inference(image, compiled_model)
+        confidence_threshold = 0.3
+        detections = []
+        for detection in model_output:
+            image_id, class_id, confidence, xmin, ymin, xmax, ymax = detection
+            if confidence > confidence_threshold:
+                detections.append({
+                    "class_id": int(class_id),
+                    "confidence": float(confidence),
+                    "bbox": [float(xmin), float(ymin), float(xmax), float(ymax)]
+                })
+        results.append({
+            "frame_path": frame_path,
+            "detections": detections
+        })
+    # Optionally: save results to a file or database
+    print(f"Background inference for camera {camera_id} complete. {len(results)} frames processed.")
+
+@router.post("/inference/background")
+async def start_background_inference(camera_id: str, model_name: str, accelerator: Optional[str] = "cpu32"):
+    if accelerator not in ACCELERATORS:
+        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    thread = Thread(target=background_inference, args=(camera_id, model_name, accelerator), daemon=True)
+    thread.start()
+    return {
+        "camera_id": camera_id,
+        "model_name": model_name,
+        "accelerator": accelerator,
+        "architecture": ARCHITECTURE,
+        "status": "background_inference_started"
+    }
