@@ -1,19 +1,25 @@
 # Use Ubuntu 24.04 as base image
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
 # Set environment variables to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Update system and install required packages
+# Install Python 3.10 (default for Ubuntu 22.04)
 RUN apt update && apt install -y \
-    python3.12 python3.12-venv python3.12-dev \
-    curl wget git unzip net-tools \
-    libgl1 libglib2.0-0 \
-    && apt clean && rm -rf /var/lib/apt/lists/*
+    python3 python3-pip \
+    libopencv-dev \
+    libdrm-dev libjpeg-dev \
+    libv4l-dev libtinfo5 \
+    curl wget unzip git net-tools build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set Python3.12 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+# Copy the correct RKNN Toolkit wheel
+# Ensure the wheel matches cp310 (Python 3.10)
+COPY rknn_toolkit2-1.6.0-cp310-cp310-linux_aarch64.whl /tmp/
+
+# Install RKNN toolkit
+RUN pip3 install /tmp/rknn_toolkit2-1.6.0-cp310-cp310-linux_aarch64.whl
 
 # Create a working directory
 WORKDIR /app
