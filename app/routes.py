@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.services import run_object_detection
+from app.services import run_object_detection, get_available_objects, get_available_models
 from app.models import model_manager, ACCELERATORS, MODEL_NAME_MAPPING
 from app.shared_data import (
     list_available_cameras, 
@@ -15,15 +15,21 @@ from typing import Optional
 
 router = APIRouter()
 
-ARCHITECTURE = "openvino"
+ARCHITECTURE = "rk3588"
 
 @router.get("/models")
 async def list_available_models():
     """Returns a list of all available models."""
     return {"available_models": model_manager.list_models()}
 
+@router.get("/objects")
+async def list_available_objects():
+    """Returns a list of all available object types for detection."""
+    return {"available_objects": get_available_objects()}
+
 @router.post("/inference/detection")
 def detect_objects(object_name: str, image: UploadFile = File(...)):
+    """Run object detection on uploaded image."""
     image_bytes = image.file.read()
     detections = run_object_detection(image_bytes, object_name)
     return {"objects": detections}
@@ -91,113 +97,155 @@ async def get_camera_frame_by_index(camera_id: str, frame_index: int):
 async def get_model_info():
     return {
         "models": list(MODEL_NAME_MAPPING.keys()),
+        "objects": get_available_objects(),
         "accelerators": ACCELERATORS,
         "architecture": ARCHITECTURE
     }
 
 # --- Model Load API ---
 @router.post("/model/load")
-async def load_model(model_name: str, accelerator: Optional[str] = "cpu32"):
-    if accelerator not in ACCELERATORS:
-        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+async def load_model(model_name: str):
+    """Load a specific model for inference."""
     if model_name not in MODEL_NAME_MAPPING:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
     try:
-        # Create a new manager for the requested accelerator
-        from app.models import ModelManager
-        manager = ModelManager(acceleration=accelerator)
-        compiled_model, input_shape = manager.load_model(model_name)
+        print(f"🔄 Loading model: {model_name}")
+        
+        # Load the model using the model manager
+        model_path = model_manager.load_model(model_name)
+        
+        print(f"✅ Model loaded successfully: {model_path}")
+        
         return {
             "model_name": model_name,
-            "accelerator": accelerator,
+            "model_path": model_path,
             "architecture": ARCHITECTURE,
             "status": "loaded"
         }
+    except Exception as e:
+        error_msg = f"❌ Failed to load model {model_name}: {str(e)}"
+        print(error_msg)
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+# --- Direct Inference API ---
+@router.post("/inference/direct")
+async def direct_inference(model_name: str, image: UploadFile = File(...)):
+    """Run direct inference using a specific model."""
+    if model_name not in MODEL_NAME_MAPPING:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    
+    try:
+        from app.services import run_inference, preprocess_image
+        from config import MODEL_INPUT_SHAPES
+        
+        image_bytes = image.file.read()
+        
+        # Get input shape for the model
+        input_shape = MODEL_INPUT_SHAPES.get(model_name, (640, 640))
+        
+        # Preprocess image
+        preprocessed_image = preprocess_image(image_bytes, input_shape)
+        
+        # Run inference
+        output = run_inference(preprocessed_image, model_name)
+        
+        return {
+            "model_name": model_name,
+            "input_shape": input_shape,
+            "output_shape": output.shape if hasattr(output, 'shape') else None,
+            "output": output.tolist() if hasattr(output, 'tolist') else str(output)
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Inference on Latest Frame API ---
 @router.post("/inference/latest-frame")
-async def inference_latest_frame(camera_id: str, model_name: str, accelerator: Optional[str] = "cpu32"):
-    if accelerator not in ACCELERATORS:
-        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+async def inference_latest_frame(camera_id: str, model_name: str):
+    """Run inference on the latest frame using a specific model."""
     if model_name not in MODEL_NAME_MAPPING:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
+    
     latest_frame = get_latest_frame(camera_id)
     if not latest_frame:
         raise HTTPException(status_code=404, detail=f"No frames found for camera {camera_id}")
+    
     frame_bytes = read_frame_file(latest_frame)
     if not frame_bytes:
         raise HTTPException(status_code=500, detail=f"Failed to read frame file: {latest_frame}")
-    from app.models import ModelManager
-    manager = ModelManager(acceleration=accelerator)
-    from app.services import preprocess_image, run_inference
-    compiled_model, input_shape = manager.load_model(model_name)
-    image = preprocess_image(frame_bytes, input_shape)
-    model_output = run_inference(image, compiled_model)
-    # Parse output (same as run_object_detection)
-    confidence_threshold = 0.3
-    detections = []
-    for detection in model_output:
-        image_id, class_id, confidence, xmin, ymin, xmax, ymax = detection
-        if confidence > confidence_threshold:
-            detections.append({
-                "class_id": int(class_id),
-                "confidence": float(confidence),
-                "bbox": [float(xmin), float(ymin), float(xmax), float(ymax)]
-            })
-    return {
-        "camera_id": camera_id,
-        "model_name": model_name,
-        "accelerator": accelerator,
-        "architecture": ARCHITECTURE,
-        "frame_path": latest_frame,
-        "detections": detections
-    }
+    
+    try:
+        from app.services import run_inference, preprocess_image
+        from config import MODEL_INPUT_SHAPES
+        
+        # Get input shape for the model
+        input_shape = MODEL_INPUT_SHAPES.get(model_name, (640, 640))
+        
+        # Preprocess image
+        preprocessed_image = preprocess_image(frame_bytes, input_shape)
+        
+        # Run inference
+        output = run_inference(preprocessed_image, model_name)
+        
+        return {
+            "camera_id": camera_id,
+            "model_name": model_name,
+            "architecture": ARCHITECTURE,
+            "frame_path": latest_frame,
+            "input_shape": input_shape,
+            "output_shape": output.shape if hasattr(output, 'shape') else None,
+            "output": output.tolist() if hasattr(output, 'tolist') else str(output)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Background Inference API ---
-def background_inference(camera_id: str, model_name: str, accelerator: str):
-    from app.models import ModelManager
-    from app.services import preprocess_image, run_inference
-    manager = ModelManager(acceleration=accelerator)
-    compiled_model, input_shape = manager.load_model(model_name)
-    frame_files = list_camera_frames(camera_id)
-    results = []
-    for frame_path in frame_files:
-        frame_bytes = read_frame_file(frame_path)
-        if not frame_bytes:
-            continue
-        image = preprocess_image(frame_bytes, input_shape)
-        model_output = run_inference(image, compiled_model)
-        confidence_threshold = 0.3
-        detections = []
-        for detection in model_output:
-            image_id, class_id, confidence, xmin, ymin, xmax, ymax = detection
-            if confidence > confidence_threshold:
-                detections.append({
-                    "class_id": int(class_id),
-                    "confidence": float(confidence),
-                    "bbox": [float(xmin), float(ymin), float(xmax), float(ymax)]
-                })
-        results.append({
-            "frame_path": frame_path,
-            "detections": detections
-        })
-    # Optionally: save results to a file or database
-    print(f"Background inference for camera {camera_id} complete. {len(results)} frames processed.")
+def background_inference(camera_id: str, model_name: str):
+    """Run background inference on all frames for a camera."""
+    from app.services import run_inference, preprocess_image
+    from config import MODEL_INPUT_SHAPES
+    
+    try:
+        # Get input shape for the model
+        input_shape = MODEL_INPUT_SHAPES.get(model_name, (640, 640))
+        
+        frame_files = list_camera_frames(camera_id)
+        results = []
+        
+        for frame_path in frame_files:
+            frame_bytes = read_frame_file(frame_path)
+            if not frame_bytes:
+                continue
+                
+            preprocessed_image = preprocess_image(frame_bytes, input_shape)
+            output = run_inference(preprocessed_image, model_name)
+            
+            results.append({
+                "frame_path": frame_path,
+                "output_shape": output.shape if hasattr(output, 'shape') else None,
+                "output": output.tolist() if hasattr(output, 'tolist') else str(output)
+            })
+        
+        print(f"Background inference for camera {camera_id} complete. {len(results)} frames processed.")
+        
+    except Exception as e:
+        print(f"Background inference error: {str(e)}")
 
 @router.post("/inference/background")
-async def start_background_inference(camera_id: str, model_name: str, accelerator: Optional[str] = "cpu32"):
-    if accelerator not in ACCELERATORS:
-        raise HTTPException(status_code=400, detail=f"Unsupported accelerator: {accelerator}")
+async def start_background_inference(camera_id: str, model_name: str):
+    """Start background inference on all frames for a camera."""
     if model_name not in MODEL_NAME_MAPPING:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
-    thread = Thread(target=background_inference, args=(camera_id, model_name, accelerator), daemon=True)
+    
+    thread = Thread(target=background_inference, args=(camera_id, model_name), daemon=True)
     thread.start()
+    
     return {
         "camera_id": camera_id,
         "model_name": model_name,
-        "accelerator": accelerator,
         "architecture": ARCHITECTURE,
         "status": "background_inference_started"
     }
