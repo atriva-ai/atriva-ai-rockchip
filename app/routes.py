@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from app.services import run_object_detection, get_available_objects, get_available_models
 from app.models import model_manager, ACCELERATORS, MODEL_NAME_MAPPING
 from app.shared_data import (
@@ -8,10 +8,16 @@ from app.shared_data import (
     read_frame_file,
     list_camera_frames
 )
+from app.vehicle_tracker import (
+    get_vehicle_tracker, 
+    remove_vehicle_tracker, 
+    process_frame_for_tracking
+)
 from fastapi.responses import FileResponse
 import os
 from threading import Thread
-from typing import Optional
+from typing import Optional, Dict
+from io import BytesIO
 
 router = APIRouter()
 
@@ -249,3 +255,176 @@ async def start_background_inference(camera_id: str, model_name: str):
         "architecture": ARCHITECTURE,
         "status": "background_inference_started"
     }
+
+# --- Vehicle Tracking API ---
+@router.post("/vehicle-tracking/start/")
+async def start_vehicle_tracking(
+    camera_id: str = Form(...),
+    tracking_config: Optional[Dict] = None
+):
+    """Start vehicle tracking for a camera"""
+    try:
+        # Get or create vehicle tracker
+        tracker = get_vehicle_tracker(int(camera_id), tracking_config)
+        
+        # Start tracking
+        tracker.start_tracking()
+        
+        return {
+            "message": "Vehicle tracking started",
+            "camera_id": camera_id,
+            "tracking_config": tracker.config,
+            "status": "active"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start vehicle tracking: {str(e)}")
+
+@router.post("/vehicle-tracking/stop/")
+async def stop_vehicle_tracking(camera_id: str = Form(...)):
+    """Stop vehicle tracking for a camera"""
+    try:
+        # Stop tracking
+        tracker = get_vehicle_tracker(int(camera_id))
+        tracker.stop_tracking()
+        
+        return {
+            "message": "Vehicle tracking stopped",
+            "camera_id": camera_id,
+            "status": "inactive"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop vehicle tracking: {str(e)}")
+
+@router.get("/vehicle-tracking/status/{camera_id}")
+async def get_vehicle_tracking_status(camera_id: str):
+    """Get vehicle tracking status for a camera"""
+    try:
+        tracker = get_vehicle_tracker(int(camera_id))
+        status = tracker.get_status()
+        
+        return {
+            "camera_id": camera_id,
+            "tracker_status": status
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get vehicle tracking status: {str(e)}")
+
+@router.put("/vehicle-tracking/config/{camera_id}")
+async def update_vehicle_tracking_config(
+    camera_id: str,
+    tracking_config: Dict
+):
+    """Update vehicle tracking configuration for a camera"""
+    try:
+        # Update tracker configuration
+        tracker = get_vehicle_tracker(int(camera_id))
+        tracker.config = tracking_config
+        
+        return {
+            "message": "Vehicle tracking configuration updated",
+            "camera_id": camera_id,
+            "tracking_config": tracking_config
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update vehicle tracking configuration: {str(e)}")
+
+@router.post("/vehicle-tracking/process-frame/")
+async def process_frame_with_tracking(
+    camera_id: str = Form(...),
+    frame_number: int = Form(0)
+):
+    """Process a frame for vehicle tracking and return annotated frame path"""
+    try:
+        # Get the latest frame for the camera
+        latest_frame = get_latest_frame(camera_id)
+        if not latest_frame:
+            raise HTTPException(status_code=404, detail=f"No frames found for camera {camera_id}")
+        
+        # Read the frame file
+        frame_bytes = read_frame_file(latest_frame)
+        if not frame_bytes:
+            raise HTTPException(status_code=500, detail=f"Failed to read frame file: {latest_frame}")
+        
+        # Process frame for vehicle tracking
+        annotated_frame_bytes, tracks, saved_path = process_frame_for_tracking(
+            int(camera_id), frame_bytes, frame_number
+        )
+        
+        # Return tracking information with saved path
+        return {
+            "camera_id": camera_id,
+            "frame_number": frame_number,
+            "tracked_vehicles": len(tracks),
+            "ai_annotation_path": saved_path,
+            "frame_path": latest_frame,
+            "tracks": [
+                {
+                    "track_id": track.track_id,
+                    "class_name": track.class_name,
+                    "confidence": track.confidence,
+                    "bbox": track.bbox
+                }
+                for track in tracks
+            ]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process frame for tracking: {str(e)}")
+
+@router.get("/vehicle-tracking/annotated-frame/{camera_id}")
+async def get_annotated_frame(camera_id: str):
+    """Get the latest annotated frame with vehicle tracking for a camera"""
+    try:
+        # Get the latest frame for the camera
+        latest_frame = get_latest_frame(camera_id)
+        if not latest_frame:
+            raise HTTPException(status_code=404, detail=f"No frames found for camera {camera_id}")
+        
+        # Read the frame file
+        frame_bytes = read_frame_file(latest_frame)
+        if not frame_bytes:
+            raise HTTPException(status_code=500, detail=f"Failed to read frame file: {latest_frame}")
+        
+        # Process frame for vehicle tracking
+        annotated_frame_bytes, tracks, saved_path = process_frame_for_tracking(
+            int(camera_id), frame_bytes, 0
+        )
+        
+        # If we have a saved annotated frame, return it
+        if saved_path and os.path.exists(saved_path):
+            return FileResponse(
+                saved_path,
+                media_type="image/jpeg",
+                headers={
+                    "X-Vehicle-Tracking": "enabled",
+                    "X-Tracked-Vehicles": str(len(tracks)),
+                    "X-Saved-Path": saved_path
+                }
+            )
+        else:
+            # Return the annotated frame bytes if no saved file
+            return FileResponse(
+                BytesIO(annotated_frame_bytes),
+                media_type="image/jpeg",
+                headers={
+                    "X-Vehicle-Tracking": "enabled",
+                    "X-Tracked-Vehicles": str(len(tracks)),
+                    "X-Saved-Path": ""
+                }
+            )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get annotated frame: {str(e)}")
+
+@router.delete("/vehicle-tracking/cleanup/{camera_id}")
+async def cleanup_vehicle_tracking(camera_id: str):
+    """Clean up vehicle tracking resources for a camera"""
+    try:
+        remove_vehicle_tracker(int(camera_id))
+        
+        return {
+            "message": "Vehicle tracking resources cleaned up",
+            "camera_id": camera_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup vehicle tracking: {str(e)}")
