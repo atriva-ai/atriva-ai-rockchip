@@ -6,7 +6,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 # Install required system packages
-RUN apt update && apt install -y \
+# Some mirrors have Release files that are "not valid yet" if the container clock differs.
+# Disable APT date validation during update to avoid build failures.
+RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && apt-get install -y \
     python3 python3-pip python3-venv \
     libopencv-dev libdrm-dev libjpeg-dev \
     libv4l-dev libtinfo5 \
