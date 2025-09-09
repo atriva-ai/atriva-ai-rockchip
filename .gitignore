@@ -1,34 +1,34 @@
-# Byte-compiled / optimized / DLL files
+# RKNN Toolkit2 binaries (too large for git)
+rknpu/*.whl
+rknpu/librknnrt.so
+rknpu/rknn_server
+
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
 
 # Virtual environment
 venv/
-env/
+ai-venv/
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-
-# Logs and databases
-*.log
-*.sqlite3
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# IDE settings (PyCharm, VS Code, etc.)
+# IDE
 .vscode/
 .idea/
-*.iml
+*.swp
+*.swo
 
-# Testing
-.coverage
-.tox/
-
-# Secrets (make sure to exclude sensitive data!)
-.env
-
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp

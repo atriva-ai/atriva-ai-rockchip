@@ -26,6 +26,7 @@ MODEL_NAME_MAPPING = {
 # RKNN Model Manager
 class ModelManager:
     BASE_DIR = "/tmp/models"  # Use writable temp directory for container
+    PRE_DOWNLOADED_DIR = "/app/models"  # Pre-downloaded models directory
 
     def __init__(self, acceleration="rk3588"):
         if acceleration not in ACCELERATORS:
@@ -35,11 +36,42 @@ class ModelManager:
         self.MODEL_DIR = os.path.join(self.BASE_DIR, acceleration)
         os.makedirs(self.MODEL_DIR, exist_ok=True)
 
+    def check_pre_downloaded_model(self, model_name):
+        """Check if model is available in pre-downloaded directory."""
+        # Check for .onnx file first (preferred for RKNN)
+        onnx_path = os.path.join(self.PRE_DOWNLOADED_DIR, f"{model_name}.onnx")
+        pt_path = os.path.join(self.PRE_DOWNLOADED_DIR, f"{model_name}.pt")
+        
+        if os.path.exists(onnx_path):
+            print(f"✅ Found pre-downloaded ONNX model: {onnx_path}")
+            return onnx_path
+        elif os.path.exists(pt_path):
+            print(f"✅ Found pre-downloaded PyTorch model: {pt_path}")
+            return pt_path
+        else:
+            print(f"⚠️ No pre-downloaded model found for {model_name}")
+            return None
+
     def download_model(self, model_name):
         """Download model using wget and store in /app/models/<model_name> folder."""
         if model_name not in MODEL_NAME_MAPPING:
             raise ValueError(f"❌ Unknown model: {model_name}. Available: {list(MODEL_NAME_MAPPING.keys())}")
 
+        # First check for pre-downloaded models
+        pre_downloaded_path = self.check_pre_downloaded_model(model_name)
+        if pre_downloaded_path:
+            # Copy pre-downloaded model to model directory
+            model_folder = os.path.join(self.MODEL_DIR, model_name)
+            os.makedirs(model_folder, exist_ok=True)
+            
+            # Copy the model file
+            model_file = os.path.basename(pre_downloaded_path)
+            dest_path = os.path.join(model_folder, model_file)
+            shutil.copy2(pre_downloaded_path, dest_path)
+            print(f"📋 Copied pre-downloaded model to: {dest_path}")
+            return dest_path
+
+        # If no pre-downloaded model, download from URL
         model_url = MODEL_NAME_MAPPING[model_name]
         model_folder = os.path.join(self.MODEL_DIR, model_name)
         
@@ -140,9 +172,9 @@ class ModelManager:
                 raise Exception(f"❌ Failed to configure model: {ret}")
             print(f"✅ Model configured successfully")
             
-            # Load ONNX model AFTER configuration
+            # Load ONNX model AFTER configuration with fixed input shapes
             print(f"📥 Loading ONNX model: {onnx_path}")
-            ret = rknn.load_onnx(model=onnx_path)
+            ret = rknn.load_onnx(model=onnx_path, inputs=['images'], input_size_list=[[1, 3, 640, 640]])
             if ret != 0:
                 raise Exception(f"❌ Failed to load ONNX model: {ret}")
             print(f"✅ ONNX model loaded successfully")

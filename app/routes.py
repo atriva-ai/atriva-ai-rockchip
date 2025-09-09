@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Body
+from pydantic import BaseModel
 from app.services import run_object_detection, get_available_objects, get_available_models
 from app.models import model_manager, ACCELERATORS, MODEL_NAME_MAPPING
 from app.shared_data import (
@@ -22,6 +23,9 @@ from io import BytesIO
 router = APIRouter()
 
 ARCHITECTURE = "rk3588"
+
+class VehicleTrackingRequest(BaseModel):
+    camera_id: str
 
 @router.get("/models")
 async def list_available_models():
@@ -258,14 +262,16 @@ async def start_background_inference(camera_id: str, model_name: str):
 
 # --- Vehicle Tracking API ---
 @router.post("/vehicle-tracking/start/")
-async def start_vehicle_tracking(
-    camera_id: str = Form(...),
-    tracking_config: Optional[Dict] = None
-):
-    """Start vehicle tracking for a camera"""
+async def start_vehicle_tracking(request: VehicleTrackingRequest):
+    """Start vehicle tracking for a camera
+    
+    Accepts JSON body with camera_id field.
+    Example: {"camera_id": "11"}
+    """
+    camera_id = request.camera_id
     try:
-        # Get or create vehicle tracker
-        tracker = get_vehicle_tracker(int(camera_id), tracking_config)
+        # Get or create vehicle tracker with default config
+        tracker = get_vehicle_tracker(int(camera_id), None)
         
         # Start tracking
         tracker.start_tracking()
@@ -280,8 +286,13 @@ async def start_vehicle_tracking(
         raise HTTPException(status_code=500, detail=f"Failed to start vehicle tracking: {str(e)}")
 
 @router.post("/vehicle-tracking/stop/")
-async def stop_vehicle_tracking(camera_id: str = Form(...)):
-    """Stop vehicle tracking for a camera"""
+async def stop_vehicle_tracking(request: VehicleTrackingRequest):
+    """Stop vehicle tracking for a camera
+    
+    Accepts JSON body with camera_id field.
+    Example: {"camera_id": "11"}
+    """
+    camera_id = request.camera_id
     try:
         # Stop tracking
         tracker = get_vehicle_tracker(int(camera_id))

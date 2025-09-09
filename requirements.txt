@@ -6,3 +6,4 @@ requests
 python-multipart
 scipy
 Pillow
+rknn-toolkit2==2.3.2

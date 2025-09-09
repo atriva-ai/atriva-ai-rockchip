@@ -18,21 +18,21 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false upd
 # Set workdir
 WORKDIR /app
 
-# Copy RKNN toolkit from local rknpu directory
-COPY rknpu/rknn_toolkit2-2.3.2-*.whl /tmp/
+# Download RKNN toolkit and runtime components
+COPY scripts/download_rknn.sh /tmp/
+RUN chmod +x /tmp/download_rknn.sh
 
-# Copy RKNN runtime library to system library folder
-COPY rknpu/librknnrt.so /usr/lib64/
-RUN ldconfig
-
-# Copy RKNN server binary to system path
-COPY rknpu/rknn_server /usr/local/bin/
-RUN chmod +x /usr/local/bin/rknn_server
+# Copy RKNN runtime components (if available locally)
+# These need to be obtained from Rockchip and placed in rknpu/ directory
+COPY rknpu/librknnrt.so /usr/lib64/ 2>/dev/null || echo "⚠️ librknnrt.so not found - please obtain from Rockchip"
+COPY rknpu/rknn_server /usr/local/bin/ 2>/dev/null || echo "⚠️ rknn_server not found - please obtain from Rockchip"
+RUN ldconfig 2>/dev/null || true
+RUN chmod +x /usr/local/bin/rknn_server 2>/dev/null || true
 
 # Copy RKNN startup scripts
-COPY rknpu/start_rknn.sh /usr/local/bin/
-COPY rknpu/restart_rknn.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/start_rknn.sh /usr/local/bin/restart_rknn.sh
+COPY rknpu/start_rknn.sh /usr/local/bin/ 2>/dev/null || echo "⚠️ start_rknn.sh not found"
+COPY rknpu/restart_rknn.sh /usr/local/bin/ 2>/dev/null || echo "⚠️ restart_rknn.sh not found"
+RUN chmod +x /usr/local/bin/start_rknn.sh /usr/local/bin/restart_rknn.sh 2>/dev/null || true
 
 # Create and activate virtual environment
 RUN python3 -m venv /app/venv
@@ -40,9 +40,10 @@ RUN python3 -m venv /app/venv
 # Copy requirements first (for better caching)
 COPY requirements.txt .
 
-# Install RKNN and requirements into venv (this layer will be cached unless requirements.txt changes)
-RUN /app/venv/bin/pip install --upgrade pip && \
-    /app/venv/bin/pip install /tmp/rknn_toolkit2-2.3.2-*.whl && \
+# Download RKNN toolkit and install requirements
+RUN /tmp/download_rknn.sh && \
+    /app/venv/bin/pip install --upgrade pip && \
+    /app/venv/bin/pip install /app/rknpu/rknn_toolkit2-*.whl && \
     /app/venv/bin/pip install -r requirements.txt
 
 # Add venv to PATH so CMD can access installed packages

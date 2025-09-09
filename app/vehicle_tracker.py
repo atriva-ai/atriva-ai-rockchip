@@ -257,28 +257,38 @@ class VehicleTracker:
     def detect_vehicles(self, frame_bytes: bytes) -> List[Detection]:
         """Detect vehicles in the frame using RKNN YOLOv8n model"""
         try:
+            logger.info(f"🔍 Starting vehicle detection for camera {self.camera_id}")
             from app.services import run_inference, preprocess_image
             
             # Use YOLOv8n for vehicle detection
             model_name = "yolov8n"
             input_shape = (640, 640)  # YOLOv8n input shape
+            logger.info(f"🤖 Using model: {model_name} with input shape: {input_shape}")
             
             # Preprocess image for model input
+            logger.info(f"🖼️ Preprocessing image...")
             preprocessed_image = preprocess_image(frame_bytes, input_shape)
+            logger.info(f"✅ Image preprocessed successfully")
             
             # Run inference using RKNN
+            logger.info(f"⚡ Running inference...")
             model_output = run_inference(preprocessed_image, model_name)
+            logger.info(f"✅ Inference completed, output shape: {model_output.shape}")
             
             # Parse YOLOv8n output format
             detections = []
             confidence_threshold = 0.5
+            logger.info(f"🔍 Parsing detection results with confidence threshold: {confidence_threshold}")
             
             # YOLOv8n output format: [batch, num_detections, 85] where 85 = 4(bbox) + 1(conf) + 80(classes)
             if len(model_output.shape) == 3:
                 # Remove batch dimension
                 model_output = model_output[0]
             
-            for detection in model_output:
+            logger.info(f"📊 Processing {len(model_output)} raw detections")
+            vehicle_detections = 0
+            
+            for i, detection in enumerate(model_output):
                 # Get confidence and class probabilities
                 bbox = detection[:4]  # x_center, y_center, width, height
                 confidence = detection[4]
@@ -289,7 +299,11 @@ class VehicleTracker:
                     class_id = np.argmax(class_probs)
                     class_confidence = class_probs[class_id] * confidence
                     
+                    logger.info(f"🎯 Detection {i}: class_id={class_id}, conf={confidence:.3f}, class_conf={class_confidence:.3f}")
+                    
                     if class_id in self.vehicle_classes and class_confidence > confidence_threshold:
+                        vehicle_detections += 1
+                        logger.info(f"🚗 Vehicle detected: {self.vehicle_classes[class_id]} (conf: {class_confidence:.3f})")
                         # Convert center format to x1, y1, x2, y2
                         x_center, y_center, width, height = bbox
                         x1 = max(0, x_center - width / 2)
@@ -305,34 +319,35 @@ class VehicleTracker:
                         )
                         detections.append(detection_obj)
             
+            logger.info(f"✅ Detection complete: {vehicle_detections} vehicles found out of {len(model_output)} total detections")
             return detections
             
         except Exception as e:
-            logger.warning(f"Failed to run vehicle detection with model: {e}")
-            logger.info("Using mock detections for testing")
+            logger.error(f"❌ Failed to run vehicle detection with model: {e}")
+            logger.error("🚫 Vehicle detection failed - no fallback available")
             
-            # Return mock detections for testing when model is not available
-            # This simulates a car in the center of the frame
-            mock_detections = [
-                Detection(
-                    bbox=[200.0, 150.0, 400.0, 350.0],  # Mock car bounding box
-                    confidence=0.8,
-                    class_id=2,  # car class
-                    class_name='car'
-                )
-            ]
-            return mock_detections
+            # Return empty detections when model fails
+            logger.info(f"📭 Returning 0 detections due to model failure")
+            return []
     
     def track_vehicles(self, frame_bytes: bytes) -> Tuple[bytes, List[Track]]:
         """Track vehicles in the frame and return annotated frame bytes"""
+        logger.info(f"🔍 Processing frame {self.frame_count + 1} for camera {self.camera_id}")
+        
         if not self.is_active:
+            logger.info(f"⚠️ Tracking not active for camera {self.camera_id}")
             return frame_bytes, []
         
+        logger.info(f"✅ Tracking is active for camera {self.camera_id}")
+        
         # Detect vehicles
+        logger.info(f"🔎 Detecting vehicles in frame...")
         detections = self.detect_vehicles(frame_bytes)
+        logger.info(f"🎯 Found {len(detections)} vehicle detections")
         
         # Update tracker
         tracks = self.tracker.update(detections)
+        logger.info(f"📊 Tracker updated, {len(tracks)} active tracks")
         
         # Annotate frame with tracking results
         annotated_frame_bytes = self._annotate_frame(frame_bytes, tracks)
@@ -346,8 +361,10 @@ class VehicleTracker:
                 'age': track.age,
                 'last_seen': time.time()
             }
+            logger.info(f"🚙 Track {track.track_id}: {track.class_name} (conf: {track.confidence:.2f})")
         
         self.frame_count += 1
+        logger.info(f"📈 Total frames processed: {self.frame_count}")
         return annotated_frame_bytes, tracks
     
     def _annotate_frame(self, frame_bytes: bytes, tracks: List[Track]) -> bytes:
@@ -410,7 +427,9 @@ class VehicleTracker:
     def start_tracking(self):
         """Start vehicle tracking"""
         self.is_active = True
-        logger.info(f"Vehicle tracking started for camera {self.camera_id}")
+        logger.info(f"🚗 Vehicle tracking started for camera {self.camera_id}")
+        logger.info(f"📁 Output directory: {self.output_dir}")
+        logger.info(f"🔧 Config: {self.config}")
     
     def stop_tracking(self):
         """Stop vehicle tracking"""
@@ -456,7 +475,11 @@ def remove_vehicle_tracker(camera_id: int):
 
 def process_frame_for_tracking(camera_id: int, frame_bytes: bytes, frame_number: int) -> Tuple[bytes, List[Track], str]:
     """Process a frame for vehicle tracking and return annotated frame bytes, tracks, and saved path"""
+    logger.info(f"🎬 Processing frame {frame_number} for camera {camera_id}")
+    logger.info(f"📏 Frame size: {len(frame_bytes)} bytes")
+    
     tracker = get_vehicle_tracker(camera_id)
+    logger.info(f"📊 Tracker status: active={tracker.is_active}, frames_processed={tracker.frame_count}")
     
     # Track vehicles
     annotated_frame_bytes, tracks = tracker.track_vehicles(frame_bytes)
@@ -464,6 +487,13 @@ def process_frame_for_tracking(camera_id: int, frame_bytes: bytes, frame_number:
     # Save annotated frame if tracking is active
     saved_path = ""
     if tracker.is_active and tracks:
+        logger.info(f"💾 Saving annotated frame with {len(tracks)} tracks")
         saved_path = tracker.save_annotated_frame(annotated_frame_bytes, frame_number)
+        logger.info(f"✅ Frame saved to: {saved_path}")
+    else:
+        if not tracker.is_active:
+            logger.info(f"⚠️ Not saving frame - tracking not active")
+        if not tracks:
+            logger.info(f"⚠️ Not saving frame - no tracks detected")
     
     return annotated_frame_bytes, tracks, saved_path
